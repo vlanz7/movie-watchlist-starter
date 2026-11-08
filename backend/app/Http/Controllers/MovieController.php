@@ -2,8 +2,11 @@
 
 namespace App\Http\Controllers;
 
+use App\Exceptions\GeminiException;
+use App\Http\Requests\RecommendMovieRequest;
 use App\Http\Resources\MovieResource;
 use App\Models\Movie;
+use App\Services\MovieRecommendationService;
 use Illuminate\Http\JsonResponse;
 use Illuminate\Http\Request;
 use Illuminate\Http\Resources\Json\AnonymousResourceCollection;
@@ -43,5 +46,19 @@ class MovieController extends Controller
             return response()->json(['message' => 'Film tidak ditemukan'], 404);
         }
         return new MovieResource($movie);
+    }
+
+    public function recommend(RecommendMovieRequest $request, MovieRecommendationService $recommender): JsonResponse
+    {
+        try {
+            $result = $recommender->recommend($request->validated('prompt'));
+        } catch (GeminiException $e) {
+            return response()->json(['message' => $e->getMessage()], $e->status);
+        }
+        return response()->json([
+            'movie_id'  => $result['movie']->id,
+            'reasoning' => $result['reasoning'],
+            'movie'     => (new MovieResource($result['movie']))->resolve(),
+        ]);
     }
 }

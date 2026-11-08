@@ -9,12 +9,12 @@ class Watchlist extends Model
 {
     protected $fillable = ['movie_id'];
 
-    public function users(): BelongsTo
+    public function user(): BelongsTo
     {
         return $this->belongsTo(User::class);
     }
 
-    public function movies(): BelongsTo
+    public function movie(): BelongsTo
     {
         return $this->belongsTo(Movie::class);
     }
