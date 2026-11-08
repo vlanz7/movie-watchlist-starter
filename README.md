@@ -140,7 +140,7 @@ SESSION_DRIVER=file
 JWT_SECRET=hasil_random_bytes_64_karakter
 JWT_TTL=1440
 
-GEMINI_API_KEY=api_key_anda
+GEMINI_API_KEY=api_key
 GEMINI_MODEL=gemini-3.5-flash-lite
 GEMINI_FALLBACK_MODEL=gemini-3.6-flash
 GEMINI_TIMEOUT=30
@@ -186,7 +186,7 @@ Ringkasan endpoint (prefix `/api`):
 | POST | `/watchlist` | ✔ | Tambah film. Body: `{ "movieId": 1 }` | 201, 404, 409, 422 |
 | DELETE | `/watchlist/{movieId}` | ✔ | Hapus film dari watchlist | 200, 404 |
 | GET | `/watched` | ✔ | Riwayat tontonan, terbaru di atas | 200, 401 |
-| POST | `/watched` | ✔ | Catat tontonan. Body: `{ "movieId": 1, "rating": 5, "review": "..." }` | 201, 404, 422 |
+| POST | `/watched` | ✔ | Catat tontonan (satu review per film) dan otomatis mengeluarkan film dari watchlist. Body: { "movieId": 1, "rating": 5, "review": "..." }. Body: `{ "movieId": 1, "rating": 5, "review": "..." }` | 201, 404, 409, 422 |
 
 Endpoint bertanda ✔ memerlukan header `Authorization: Bearer <token>`.
 
@@ -199,7 +199,7 @@ Endpoint bertanda ✔ memerlukan header `Authorization: Bearer <token>`.
 | 400 | Body JSON rusak (tidak bisa dibaca) |
 | 401 | Token tidak ada / tidak valid / kedaluwarsa; email atau password salah |
 | 404 | Film atau entri tidak ditemukan (termasuk `movieId` yang tidak ada) |
-| 409 | Duplikat (film sudah ada di watchlist; email/username bentrok di level database) |
+| 409 | Duplikat (film sudah ada di watchlist; film sudah pernah di-review; email/username bentrok di level database) |
 | 422 | Validasi input gagal |
 | 429 | Terlalu banyak request, atau kuota Gemini habis |
 | 502 / 503 / 504 | Jawaban AI tidak valid / AI sibuk atau belum dikonfigurasi / timeout |
@@ -213,7 +213,7 @@ Kode **403 sengaja tidak dipakai**: semua query dibatasi ke user pemilik token, 
 
 - `watchlists` dan `reviews` adalah tabel penghubung many-to-many antara `users` dan `movies`, masing-masing dengan atribut sendiri. Satu user punya satu watchlist implisit (kontrak API tidak mengenal id daftar), sehingga tidak diperlukan tabel "header" watchlist.
 - `watchlists` memiliki **UNIQUE (user_id, movie_id)**: film yang sama tidak bisa masuk dua kali. Constraint ini menjadi penjaga terakhir untuk respons 409, termasuk saat dua request datang bersamaan.
-- `reviews` **sengaja tanpa UNIQUE**: setiap baris adalah satu kali menonton (model *diary*). Lihat [Keputusan Desain](#keputusan-desain-dan-trade-off).
+- `reviews` juga memiliki UNIQUE (user_id, movie_id): satu user hanya dapat me-review satu film satu kali (duplikat dibalas 409). Saat review tersimpan, film yang sama otomatis dikeluarkan dari watchlist user itu, dalam satu transaksi database.
 - Semua foreign key memakai `ON DELETE CASCADE`. Genre dinormalisasi lewat pivot `genre_movie` (primary key komposit).
 - Constraint tambahan: `CHECK (rating BETWEEN 1 AND 5)` pada `reviews` (MySQL/MariaDB/PostgreSQL).
 - Indeks: foreign key (otomatis oleh MySQL) dan UNIQUE pada `users.email`, `users.username`, `genres.name`, serta `watchlists (user_id, movie_id)`. Tidak ada indeks tambahan karena belum ada query yang membutuhkannya (20 film; pencarian memakai `LIKE '%…%'` yang tidak memakai indeks biasa).
@@ -262,8 +262,8 @@ Lapis 1–3 menurunkan peluang halusinasi; hanya lapis 4 yang **menjamin** film 
 | Keputusan | Alasan |
 |---|---|
 | **Genre dinormalisasi** (`genres` + pivot), `cast` disimpan sebagai JSON, `director` sebagai string | Genre berulang dan berpotensi difilter; `cast` hanya ditampilkan, tidak pernah dikueri, sehingga normalisasi tidak memberi manfaat nyata. Jika kelak perlu pencarian per aktor, `cast` bisa dimigrasikan ke tabel `people` |
-| **Review berupa diary** (tanpa UNIQUE per user–film) | Frontend tidak memiliki fitur edit/hapus review dan menampilkan tiap entri sebagai kartu tersendiri. Film yang sama boleh dicatat lebih dari sekali (menonton ulang) |
-| **Watchlist tidak dihapus otomatis saat film dicatat sebagai ditonton** | Itu perilaku tampilan yang dikelola klien. Backend menyediakan operasi atomik yang terpisah (`DELETE /watchlist/{id}`) |
+| **Satu review per film per user**  (UNIQUE user_id, movie_id) | Aturan bisnis dijaga di database, sehingga tetap berlaku untuk request bersamaan. Konsekuensi: tidak ada log menonton ulang, dan karena frontend belum punya fitur edit/hapus review, review yang sudah dikirim tidak bisa diubah. Endpoint PUT/DELETE /watched bisa menjadi pengembangan lanjutan |
+| **Film otomatis keluar dari watchlist saat di-review** | Film yang sudah ditonton tidak perlu lagi "ingin ditonton". Penyimpanan review dan penghapusan watchlist berada dalam satu transaksi, sehingga keduanya terjadi atau tidak sama sekali (review yang ditolak 409 tidak mengubah watchlist). Respons memuat meta.removed_from_watchlist |
 | **`username` unik** | Mencegah dua akun dengan nama tampilan sama. Konsekuensinya, bentrok username dibalas 422 dan pengguna memilih nama lain |
 | **JWT stateless tanpa tabel token** | Sederhana dan cukup untuk lingkup tugas. Konsekuensi: token tidak bisa dicabut sebelum kedaluwarsa dan tidak ada refresh token |
 | **Middleware JWT buatan sendiri** (`firebase/php-jwt`) | Ringan dan mudah dijelaskan baris per baris, tanpa tabel tambahan seperti Sanctum |
@@ -279,7 +279,7 @@ php artisan config:clear
 php artisan test
 ```
 
-Terdapat **74 feature test** yang mencakup:
+Terdapat **81 feature test** yang mencakup:
 
 - **Auth guard**: tanpa token, token rusak, tanda tangan palsu, token kedaluwarsa, token milik user yang sudah dihapus
 - **Registrasi dan login**: password ter-hash, normalisasi email, duplikat, pesan login seragam, JSON rusak (400)

@@ -16,8 +16,8 @@ return new class extends Migration
             $table->unsignedTinyInteger('rating');
             $table->text('review');
             $table->timestamps();
+            $table->unique(['user_id', 'movie_id']);
         });
-
         if (in_array(DB::getDriverName(), ['mysql', 'mariadb', 'pgsql'], true)) {
             DB::statement('ALTER TABLE reviews ADD CONSTRAINT chk_reviews_rating CHECK (rating BETWEEN 1 AND 5)');
         }

@@ -56,6 +56,15 @@ class DatabaseTest extends ApiTestCase
         $user->watchlists()->create(['movie_id' => 1]);
     }
 
+    public function test_database_rejects_duplicate_reviews_for_the_same_user_and_movie(): void
+    {
+        $this->seedMovies();
+        $user = $this->makeUser();
+        $user->reviews()->create(['movie_id' => 1, 'rating' => 5, 'review' => 'x']);
+        $this->expectException(UniqueConstraintViolationException::class);
+        $user->reviews()->create(['movie_id' => 1, 'rating' => 4, 'review' => 'y']);
+    }
+
     public function test_deleting_a_user_cascades_to_their_data(): void
     {
         $this->seedMovies();
